@@ -196,8 +196,20 @@ elif mode == "Text":
 # ---------------------------------------------
 else:
     st.header("Integer Secret Sharing")
-    n = st.number_input("Enter integer:", min_value=0, max_value=2**128-1, value=123456)
 
+    int_str = st.text_input(
+        "Enter integer (decimal):",
+        value="123456",
+        help="Any size integer is allowed. Will be encoded into 128 bits unless resized."
+    )
+
+    try:
+        n = int(int_str)
+    except:
+        st.error("Please enter a valid integer.")
+        st.stop()
+
+    # convert to 128-bit fixed length binary
     bits = int_to_bits(n, bit_length=128)
     shares = encode_24(bits)
 
