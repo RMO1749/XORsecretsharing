@@ -2,145 +2,216 @@ import streamlit as st
 import numpy as np
 from PIL import Image
 
-# ---------------------------
-# Load image and convert to grayscale bits
-# ---------------------------
-def load_image_bits_pil(pil_image: Image.Image):
-    img = pil_image.convert("L")  # grayscale only
+# ======================================================
+#        BITWISE UTILITIES FOR ALL SECRET TYPES
+# ======================================================
+def text_to_bits(text):
+    arr = np.frombuffer(text.encode("utf-8"), dtype=np.uint8)
+    bits = np.unpackbits(arr)
+    return bits.reshape(1, -1)  # shape (1, N)
+
+def bits_to_text(bits):
+    arr = np.packbits(bits.reshape(-1))
+    try:
+        return arr.tobytes().decode("utf-8")
+    except:
+        return "<Decoding Error – corrupted text>"
+
+def int_to_bits(n, bit_length=128):
+    b = np.array(list(np.binary_repr(n, width=bit_length)), dtype=np.uint8)
+    return b.reshape(1, -1)
+
+def bits_to_int(bits):
+    s = "".join(bits.reshape(-1).astype(str))
+    return int(s, 2)
+
+def load_image_bits(pil_image):
+    img = pil_image.convert("L")
     arr = np.array(img)
-    bits = np.unpackbits(arr, axis=1)  # shape: (H, W*8)
+    bits = np.unpackbits(arr, axis=1)
     return arr, bits
 
-
-# ---------------------------
-# EXACT (2,4) ENCODING SCHEME FROM YOUR SLIDE
-# ---------------------------
-def encode_24(bits: np.ndarray):
-    """
-    bits: shape (H, W*8)
-    Split horizontally into M1, M2 and apply your (2,4) XOR-based scheme.
-    """
-    n = bits.shape[1] // 2  # half the bit-length
-
-    # Split message bits into halves M1, M2
-    M1 = bits[:, :n]
-    M2 = bits[:, n:]
-
-    # Random masks
-    R1 = np.random.randint(0, 2, M1.shape, dtype=np.uint8)
-    R2 = np.random.randint(0, 2, M2.shape, dtype=np.uint8)
-
-    # According to your slide:
-
-    # E1 = (R1, M2 ⊕ R2)
-    E1 = np.concatenate([R1, M2 ^ R2], axis=1)
-
-    # E2 = (M1 ⊕ R1, R2)
-    E2 = np.concatenate([M1 ^ R1, R2], axis=1)
-
-    # E3 = (M1 ⊕ R2, M2 ⊕ R1)
-    E3 = np.concatenate([M1 ^ R2, M2 ^ R1], axis=1)
-
-    # E4 = (M1 ⊕ M2 ⊕ R1,  M1 ⊕ M2 ⊕ R2)
-    E4 = np.concatenate([M1 ^ M2 ^ R1, M1 ^ M2 ^ R2], axis=1)
-
-    return E1, E2, E3, E4
-
-
-# ---------------------------
-# DECODING — using (E1, E2)
-# ---------------------------
-def decode_from_E1_E2(E1: np.ndarray, E2: np.ndarray):
-    """
-    Decode using the algebra derived from:
-      E1 = (R1, M2 ⊕ R2)
-      E2 = (M1 ⊕ R1, R2)
-    """
-    n = E1.shape[1] // 2
-
-    R1 = E1[:, :n]
-    X  = E1[:, n:]      # M2 ⊕ R2
-
-    Y  = E2[:, :n]      # M1 ⊕ R1
-    R2 = E2[:, n:]
-
-    M1 = Y ^ R1
-    M2 = X ^ R2
-
-    return np.concatenate([M1, M2], axis=1)
-
-
-# ---------------------------
-# Convert bits back to image cleanly
-# ---------------------------
-def bits_to_image(bits: np.ndarray, shape):
-    """
-    bits: shape (H, W*8) or equivalent
-    shape: original image shape (H, W)
-    """
+def bits_to_image(bits, shape):
     flat = np.packbits(bits.reshape(-1))
     return Image.fromarray(flat.reshape(shape).astype(np.uint8))
 
 
 # ======================================================
-#                  STREAMLIT APP
+#                  (2,4) SECRET SHARING
 # ======================================================
+def encode_24(bits):
+    n = bits.shape[1] // 2
+    M1 = bits[:, :n]
+    M2 = bits[:, n:]
 
-st.title("2-of-4 XOR Secret Sharing Demo (Grayscale)")
+    R1 = np.random.randint(0,2,M1.shape,dtype=np.uint8)
+    R2 = np.random.randint(0,2,M2.shape,dtype=np.uint8)
 
-st.markdown(
-    """
-Upload an image, and this app will:
+    E1 = np.concatenate([R1,     M2 ^ R2], axis=1)
+    E2 = np.concatenate([M1 ^ R1, R2    ], axis=1)
+    E3 = np.concatenate([M1 ^ R2, M2 ^ R1], axis=1)
+    E4 = np.concatenate([M1 ^ M2 ^ R1, M1 ^ M2 ^ R2], axis=1)
 
-1. Convert it to grayscale  
-2. Encode it with the $(2,4)$ XOR-based secret-sharing scheme  
-3. Show the four **shares** (each looks like random noise)  
-4. Reconstruct the original image from shares $(E_1, E_2)$  
-"""
+    return [E1, E2, E3, E4]
+
+
+# ===== DECODERS FOR ALL 2-SHARE CASES =====
+def decode(Ea, Eb, a, b):
+    n = Ea.shape[1] // 2
+    if {a,b} == {1,2}:
+        R1 = Ea[:, :n]
+        X  = Ea[:, n:]
+        Y  = Eb[:, :n]
+        R2 = Eb[:, n:]
+        M1 = Y ^ R1
+        M2 = X ^ R2
+        return np.concatenate([M1, M2], axis=1)
+
+    elif {a,b} == {1,3}:
+        R1 = Ea[:, :n]
+        X  = Ea[:, n:]
+        A  = Eb[:, :n]
+        B  = Eb[:, n:]
+        M2 = B ^ R1
+        R2 = A ^ M2
+        M1 = X ^ R2
+        return np.concatenate([M1, M2], axis=1)
+
+    elif {a,b} == {1,4}:
+        R1 = Ea[:, :n]
+        X  = Ea[:, n:]
+        Y  = Eb[:, :n]
+        Z  = Eb[:, n:]
+        R2 = (Z ^ Y)  # derived expression
+        M2 = X ^ R2
+        M1 = Y ^ M2 ^ R1
+        return np.concatenate([M1, M2], axis=1)
+
+    elif {a,b} == {2,3}:
+        R2 = Ea[:, n:]
+        Y  = Ea[:, :n]
+        A  = Eb[:, :n]
+        B  = Eb[:, n:]
+        R1 = B ^ (Y ^ A)
+        M1 = Y ^ R1
+        M2 = B ^ R1
+        return np.concatenate([M1, M2], axis=1)
+
+    elif {a,b} == {2,4}:
+        Y = Ea[:, :n]
+        R2 = Ea[:, n:]
+        Z = Eb[:, n:]
+        M2 = Z ^ R2
+        M1 = Y ^ (Z ^ R2)
+        return np.concatenate([M1, M2], axis=1)
+
+    elif {a,b} == {3,4}:
+        A = Ea[:, :n]
+        B = Ea[:, n:]
+        Y = Eb[:, :n]
+        Z = Eb[:, n:]
+        R1 = B ^ (Y ^ A)
+        M2 = B ^ R1
+        M1 = A ^ M2
+        return np.concatenate([M1, M2], axis=1)
+
+    else:
+        return None
+
+
+# ======================================================
+#                   STREAMLIT UI
+# ======================================================
+st.title("Generalized (2,4) XOR Secret Sharing Demo")
+
+mode = st.selectbox(
+    "Choose secret type:",
+    ["Image", "Text", "Integer"]
 )
 
-uploaded_file = st.file_uploader("Upload an image (PNG/JPG)", type=["png", "jpg", "jpeg"])
+# ---------------------------------------------
+# IMAGE MODE
+# ---------------------------------------------
+if mode == "Image":
+    st.header("Image Secret Sharing")
 
-if uploaded_file is not None:
-    # Load image from upload
-    pil_img = Image.open(uploaded_file)
+    uploaded = st.file_uploader("Upload an image", type=["jpg","jpeg","png"])
+    if uploaded:
+        pil = Image.open(uploaded)
+        if max(pil.size) > 512:
+            pil = pil.resize((512, 512))
 
-    # Optional: resize large images to keep the demo snappy
-    max_side = 512
-    if max(pil_img.size) > max_side:
-        pil_img = pil_img.resize(
-            (int(pil_img.width * max_side / max(pil_img.size)),
-             int(pil_img.height * max_side / max(pil_img.size))),
-            Image.LANCZOS,
-        )
+        arr, bits = load_image_bits(pil)
+        shares = encode_24(bits)
 
-    st.subheader("Original Image (grayscale)")
-    st.image(pil_img.convert("L"), use_column_width=True)
+        st.subheader("Select shares for reconstruction")
+        choices = st.multiselect("Pick shares:", ["E1","E2","E3","E4"])
 
-    # Run encoding
-    orig_arr, orig_bits = load_image_bits_pil(pil_img)
-    E1, E2, E3, E4 = encode_24(orig_bits)
+        idx = [("E1",1),("E2",2),("E3",3),("E4",4)]
+        selected_nums = [n for (label,n) in idx if label in choices]
 
-    # Reconstruct from (E1, E2)
-    recovered_bits = decode_from_E1_E2(E1, E2)
-    recovered_img = bits_to_image(recovered_bits, orig_arr.shape)
+        if len(selected_nums) == 0:
+            st.info("No shares selected.")
+        elif len(selected_nums) == 1:
+            st.warning("A single share reveals **zero information**. Perfect secrecy.")
+        else:
+            # reconstruct from first two shares chosen
+            a, b = selected_nums[:2]
+            Ea = shares[a-1]
+            Eb = shares[b-1]
+            rec = decode(Ea, Eb, a, b)
+            img = bits_to_image(rec, arr.shape)
+            st.image(img, caption=f"Reconstruction from {choices[:2]}")
 
-    st.subheader("Shares (E₁, E₂, E₃, E₄) — each looks like random noise")
-    c1, c2 = st.columns(2)
-    c3, c4 = st.columns(2)
 
-    c1.image(bits_to_image(E1, orig_arr.shape), caption="Share E₁", use_column_width=True)
-    c2.image(bits_to_image(E2, orig_arr.shape), caption="Share E₂", use_column_width=True)
-    c3.image(bits_to_image(E3, orig_arr.shape), caption="Share E₃", use_column_width=True)
-    c4.image(bits_to_image(E4, orig_arr.shape), caption="Share E₄", use_column_width=True)
+# ---------------------------------------------
+# TEXT MODE
+# ---------------------------------------------
+elif mode == "Text":
+    st.header("Text Secret Sharing")
+    text = st.text_input("Enter secret text:")
 
-    st.subheader("Reconstruction from (E₁, E₂)")
-    st.image(recovered_img, caption="Reconstructed Image from Shares E₁ and E₂", use_column_width=True)
+    if text:
+        bits = text_to_bits(text)
+        shares = encode_24(bits)
 
-    # Check perfect reconstruction
-    equal = np.array_equal(np.array(recovered_img), orig_arr)
-    st.markdown(
-        f"**Perfect reconstruction:** {'✅ Yes' if equal else '❌ No (something is off)'}"
-    )
+        choices = st.multiselect("Pick shares:", ["E1","E2","E3","E4"])
+        selected_nums = [
+            {"E1":1,"E2":2,"E3":3,"E4":4}[c] for c in choices
+        ]
+
+        if len(selected_nums) == 0:
+            st.info("No shares selected.")
+        elif len(selected_nums) == 1:
+            st.warning("A single share reveals **zero information**.")
+        else:
+            a, b = selected_nums[:2]
+            rec = decode(shares[a-1], shares[b-1], a, b)
+            st.success("Reconstruction:")
+            st.write(bits_to_text(rec))
+
+
+# ---------------------------------------------
+# INTEGER MODE
+# ---------------------------------------------
 else:
-    st.info("⬆️ Upload an image to begin the demo.")
+    st.header("Integer Secret Sharing")
+    n = st.number_input("Enter integer:", min_value=0, max_value=2**128-1, value=123456)
+
+    bits = int_to_bits(n, bit_length=128)
+    shares = encode_24(bits)
+
+    choices = st.multiselect("Pick shares:", ["E1","E2","E3","E4"])
+    selected_nums = [
+        {"E1":1,"E2":2,"E3":3,"E4":4}[c] for c in choices
+    ]
+
+    if len(selected_nums) == 0:
+        st.info("No shares selected.")
+    elif len(selected_nums) == 1:
+        st.warning("A single share reveals **zero information**.")
+    else:
+        a, b = selected_nums[:2]
+        rec = decode(shares[a-1], shares[b-1], a, b)
+        st.success("Reconstructed integer:")
+        st.write(bits_to_int(rec))
